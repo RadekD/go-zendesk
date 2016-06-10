@@ -1,7 +1,9 @@
 package zendesk
 
 import (
+	"encoding/json"
 	v "github.com/asaskevich/govalidator"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -16,26 +18,36 @@ const (
 	AddToLastTicket
 )
 
-//Handler is a helper for sending messages
-type Handler struct {
+//ContactHandler is a helper for sending messages
+type ContactHandler struct {
 	*Auth
-
-	GetFunc     http.HandlerFunc
-	ErrorFunc   func(w http.ResponseWriter, r *http.Request, errors map[string]string)
-	SuccessFunc func(w http.ResponseWriter, r *http.Request, ticket Ticket)
-
-	CustomFieldsFunc func(r *http.Request) CustomFields
-	TagsFunc         func(r *http.Request) []string
-	ExternalIDFunc   func(r *http.Request) *uint64
-
-	Strategy Strategy
+	BeforeCreateTicket func(r *http.Request, ticket *NewTicket) *NewTicket
+	Strategy           Strategy
 }
 
-func (z Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "GET" {
-		z.GetFunc(w, r)
+type response struct {
+	Success bool
+	Errors  map[string]string `json:"Errors,omitempty"`
+}
+
+func sendJSON(w http.ResponseWriter, data interface{}) {
+	rJSON, err := json.Marshal(data)
+	if err != nil {
+		log.Fatalln("Error while marshaling response", err)
 		return
 	}
+	w.Write(rJSON)
+	return
+}
+
+func (z ContactHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		panic("Wrong method")
+	}
+	w.Header().Add("Content-Type", "application/json;charset=utf-8")
+
+	resp := response{Success: false, Errors: make(map[string]string)}
+
 	var err error
 	errors := make(map[string]string)
 
@@ -44,41 +56,34 @@ func (z Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	content := r.FormValue("Message")
 
 	if email == "" {
-		errors["Email"] = "empty"
+		resp.Errors["Email"] = "empty"
 	}
-	if !v.IsEmail(email) {
-		errors["Email"] = "invalid"
+	if email != "" && !v.IsEmail(email) {
+		resp.Errors["Email"] = "invalid"
 	}
 	if subject == "" {
-		errors["Subject"] = "empty"
+		resp.Errors["Subject"] = "empty"
 	}
 	if content == "" {
-		errors["Content"] = "empty"
+		resp.Errors["Content"] = "empty"
 	}
-	if len(errors) > 0 {
-		z.ErrorFunc(w, r, errors)
+	if len(resp.Errors) > 0 {
+		sendJSON(w, resp)
 		return
 	}
 
 	users, _ := z.SearchUser(email)
 	var user User
 	if len(users) == 0 {
-		var externalID *uint64
-		if z.ExternalIDFunc != nil {
-			externalID = z.ExternalIDFunc(r)
-		}
-
 		user, err = z.CreateUser(NewUser{
-			Name:       strings.Split(email, "@")[0],
-			Email:      email,
-			ExternalID: externalID,
-			Verified:   true,
-			Roles:      "end-user",
+			Name:  strings.Split(email, "@")[0],
+			Email: email,
+			Roles: "end-user",
 		})
 
 		if err != nil {
-			errors["User"] = err.Error()
-			z.ErrorFunc(w, r, errors)
+			resp.Errors["User"] = err.Error()
+			sendJSON(w, resp)
 			return
 		}
 	} else {
@@ -86,27 +91,19 @@ func (z Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if z.Strategy == AddToLastTicket {
-		requests, _ = z.ListOpenRequests(user)
+		requests, _ := z.ListOpenRequests(user)
 		if len(requests) > 0 {
-			ticket, err = z.AddCommentToTicket(requests[0].ID, &Comment{Body: content, AuthorID: user.ID})
+			_, err = z.AddCommentToTicket(requests[0].ID, &Comment{Body: content, AuthorID: user.ID})
 			if err != nil {
-				errors["Internal"] = err.Error()
-				z.ErrorFunc(w, r, errors)
+				resp.Errors["Internal"] = err.Error()
+				sendJSON(w, resp)
 				return
 			}
-			z.SuccessFunc(w, r, *ticket)
+
+			resp.Success = true
+			sendJSON(w, resp)
 			return
 		}
-	}
-
-	var customFields CustomFields
-	if z.CustomFieldsFunc != nil {
-		customFields = z.CustomFieldsFunc(r)
-	}
-
-	var tags []string
-	if z.TagsFunc != nil {
-		tags = z.TagsFunc(r)
 	}
 
 	newTicket := &NewTicket{
@@ -116,15 +113,17 @@ func (z Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Comment: Comment{
 			Body: content,
 		},
-		Tags:         tags,
-		CustomFields: customFields,
 	}
-	ticket, err := z.CreateTicket(newTicket)
-
+	if z.BeforeCreateTicket != nil {
+		newTicket = z.BeforeCreateTicket(r, newTicket)
+	}
+	_, err = z.CreateTicket(newTicket)
 	if err != nil {
 		errors["Internal"] = err.Error()
-		z.ErrorFunc(w, r, errors)
+		sendJSON(w, resp)
 		return
 	}
-	z.SuccessFunc(w, r, *ticket)
+	resp.Success = true
+	sendJSON(w, resp)
+	return
 }

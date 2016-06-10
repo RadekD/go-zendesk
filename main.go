@@ -10,40 +10,28 @@ import "net/http"
 func main() {
 	r := mux.NewRouter()
 
-	auth := zendesk.NewAuth("radek@dejnek.pl", "GySziP9xbK0OG0JPgxzDl6Zy8FO74mzSMy383Vcc", "dejnek.zendesk.com", true)
+	auth := zendesk.NewAuth("radek@dejnek.pl", "", "dejnek.zendesk.com", true)
 
-	handler := zendesk.Handler{
+	handler := zendesk.ContactHandler{
 		Auth: auth,
 
-		GetFunc:     handleForm,
-		ErrorFunc:   handleError,
-		SuccessFunc: handleSuccess,
-
-		CustomFieldsFunc: func(r *http.Request) zendesk.CustomFields {
-			return zendesk.CustomFields{
+		BeforeCreateTicket: func(r *http.Request, ticket *zendesk.NewTicket) *zendesk.NewTicket {
+			ticket.CustomFields = zendesk.CustomFields{
 				0: zendesk.CustomField{
 					ID:    27226329,
 					Value: "eeeeeeeeee",
 				},
 			}
-		},
-		TagsFunc: func(r *http.Request) []string {
-			return []string{"super", "tagi", "bulwo"}
+			ticket.Tags = []string{"super", "tagi", "bulwo"}
+			return ticket
 		},
 
 		Strategy: zendesk.AddToLastTicket,
 	}
-	r.Handle("/contact", handler)
+	r.Handle("/contact", handler).Methods("POST")
+	r.HandleFunc("/contact", handleForm).Methods("GET")
 
 	fmt.Println(http.ListenAndServe("127.0.0.1:8088", r))
-
-}
-
-func handleError(w http.ResponseWriter, r *http.Request, errors map[string]string) {
-	fmt.Fprintf(w, "%s", errors)
-}
-func handleSuccess(w http.ResponseWriter, r *http.Request, ticket zendesk.Ticket) {
-	fmt.Fprintf(w, "udało się %s", ticket.URL)
 }
 
 func handleForm(w http.ResponseWriter, r *http.Request) {
