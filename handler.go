@@ -93,16 +93,18 @@ func (z ContactHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if z.Strategy == AddToLastTicket {
 		requests, _ := z.ListOpenRequests(user)
 		if len(requests) > 0 {
-			_, err = z.AddCommentToTicket(requests[0].ID, &Comment{Body: content, AuthorID: user.ID})
-			if err != nil {
-				resp.Errors["Internal"] = err.Error()
+			if requests[0].Status == "open" {
+				_, err = z.AddCommentToTicket(requests[0].ID, &Comment{Body: content, AuthorID: user.ID})
+				if err != nil {
+					resp.Errors["Internal"] = err.Error()
+					sendJSON(w, resp)
+					return
+				}
+
+				resp.Success = true
 				sendJSON(w, resp)
 				return
 			}
-
-			resp.Success = true
-			sendJSON(w, resp)
-			return
 		}
 	}
 
